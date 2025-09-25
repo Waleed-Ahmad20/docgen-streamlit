@@ -349,7 +349,6 @@ def main():
         use_context = st.checkbox("Use context retrieval (Word2Vec)", value=True)
         top_k_context = st.slider("Nearest neighbors", 1, 5, 2)
         st.markdown("---")
-        st.caption("Tip: move this panel if you need more horizontal space.")
 
     # load artifacts
     with st.spinner("Loading models & tokenizers..."):
