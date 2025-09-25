@@ -14,14 +14,15 @@ from tqdm import tqdm
 from sklearn.metrics.pairwise import cosine_similarity
 
 # -------------- Configuration (edit paths if needed) --------------
-BASE_PATH = "/kaggle/input/tokenization-and-embeddings"    # or where your pkls are
-DATA_SAMPLE_PKL = "/kaggle/input/tokenization-and-embeddings/tokenized_sample.pkl"
+# Use model_artifacts/ in repository (Git LFS) for Streamlit Cloud deployment
+BASE_PATH = "model_artifacts"    # place tokenizers, pkls and model files here
+DATA_SAMPLE_PKL = os.path.join(BASE_PATH, "tokenized_sample.pkl")
 BPE_CODE_PKL = os.path.join(BASE_PATH, "bpe_code_tokenizer.pkl")
 BPE_DOC_PKL  = os.path.join(BASE_PATH, "bpe_doc_tokenizer.pkl")
 W2V_CODE_PKL = os.path.join(BASE_PATH, "word2vec_code.pkl")
 W2V_DOC_PKL  = os.path.join(BASE_PATH, "word2vec_doc.pkl")
-MODEL_STATE_PATH = "/kaggle/working/seq2seq_attention_state.pt"   # produced by training cell
-FULL_MODEL_PATH  = "/kaggle/working/seq2seq_attention_full.pt"    # optional full pickle
+MODEL_STATE_PATH = os.path.join(BASE_PATH, "seq2seq_attention_state.pt")   # state_dict (preferred)
+FULL_MODEL_PATH  = os.path.join(BASE_PATH, "seq2seq_attention_full.pt")    # optional full pickle (NOT used)
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # -------------- Utilities: load / safe helpers --------------------
@@ -112,7 +113,9 @@ class Seq2SeqAttention(nn.Module):
         logits = torch.cat(outputs, dim=1)
         return logits
 
-# -------------- Loading everything (tokenizers, w2v, model, dataset index) --------------
+# ---------------------------
+# Loading everything (tokenizers, w2v, model, dataset index)
+# ---------------------------
 @st.cache_resource(show_spinner=False)
 def load_artifacts():
     # 1) tokenizers
@@ -124,17 +127,14 @@ def load_artifacts():
     # 3) dataset index (tokenized_sample.pkl) for context retrieval
     tokenized_df = None
     if os.path.exists(DATA_SAMPLE_PKL):
-        tokenized_df = pd.read_pickle(DATA_SAMPLE_PKL)
-    # 4) Model: try to load full model first, else build model skeleton and load state_dict
+        try:
+            tokenized_df = pd.read_pickle(DATA_SAMPLE_PKL)
+        except Exception:
+            tokenized_df = None
+    # 4) Model: DO NOT attempt to load full model pickle; build model & load state_dict
     model = None
     model_meta = {}
-    if os.path.exists(FULL_MODEL_PATH):
-        try:
-            model = torch.load(FULL_MODEL_PATH, map_location=DEVICE)
-            model.to(DEVICE)
-            model_meta['loaded_full'] = True
-        except Exception as e:
-            model = None
+    # NOTE: intentionally skip loading FULL_MODEL_PATH to avoid torch unpickling of custom classes
     if model is None and os.path.exists(MODEL_STATE_PATH):
         # reconstruct architecture using tokenizers sizes
         enc_vocab = (max(code_tok.values())+1) if code_tok else 3000
@@ -151,12 +151,22 @@ def load_artifacts():
                                  hid_dim=256, emb_enc=emb_enc, emb_dec=emb_dec, dropout=0.2,
                                  num_layers=1, PAD_ENC=code_tok.get("<PAD>",0) if code_tok else 0,
                                  PAD_DEC=doc_tok.get("<PAD>",0) if doc_tok else 0)
-        state = torch.load(MODEL_STATE_PATH, map_location=DEVICE)
-        model.load_state_dict(state)
-        model.to(DEVICE)
-        model_meta['loaded_full'] = False
+        try:
+            state = torch.load(MODEL_STATE_PATH, map_location=DEVICE)
+            model.load_state_dict(state)
+            model.to(DEVICE)
+            model_meta['loaded_state_dict'] = True
+        except Exception as e:
+            # if state_dict load fails, mark and leave model None
+            model = None
+            model_meta['state_load_error'] = str(e)
     else:
-        model_meta['loaded_full'] = False
+        model_meta['loaded_state_dict'] = False
+    # include a listing of files in BASE_PATH for diagnostics
+    try:
+        model_meta['base_files'] = os.listdir(BASE_PATH)
+    except Exception:
+        model_meta['base_files'] = None
     return {
         "code_tok": code_tok, "code_idtok": code_idtok, "code_decode": code_decode, "code_encode": code_encode,
         "doc_tok": doc_tok,   "doc_idtok": doc_idtok,   "doc_decode": doc_decode,   "doc_encode": doc_encode,
@@ -322,8 +332,20 @@ def main():
     with st.spinner("Loading models & tokenizers..."):
         artifacts = load_artifacts()
     model = artifacts.get("model")
+    # If model failed to load, show diagnostic info (helps debug on Streamlit Cloud)
     if model is None:
         st.error("Model not found or failed to load. Check MODEL_STATE_PATH or FULL_MODEL_PATH.")
+        # show some diagnostic metadata
+        meta = artifacts.get("model_meta", {})
+        if meta:
+            st.write("model_meta:", {k: v for k, v in meta.items() if k != 'state_load_error'})
+            if meta.get("state_load_error"):
+                st.write("State load error:", meta.get("state_load_error"))
+        try:
+            files = os.listdir(BASE_PATH)
+            st.write("Files in", BASE_PATH, ":", files)
+        except Exception as e:
+            st.write("Could not list BASE_PATH:", str(e))
         return
 
     col1, col2 = st.columns([2,1])
