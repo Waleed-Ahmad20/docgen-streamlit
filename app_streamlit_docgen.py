@@ -326,7 +326,6 @@ def beam_search_seq2seq_generate(model, enc_ids, artifacts, beam_size=4, max_len
 def main():
     st.set_page_config(page_title="DocGen - Integrated System", layout="wide")
     st.title("Integrated Documentation Generation System (BPE + Word2Vec + Seq2Seq)")
-    st.markdown("Implements Tasks 8 & 9: context-aware generation + full Streamlit UI. See assignment spec in notebook. :contentReference[oaicite:1]{index=1}")
 
     # load artifacts
     with st.spinner("Loading models & tokenizers..."):
