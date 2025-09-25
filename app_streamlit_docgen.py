@@ -243,7 +243,7 @@ def encode_input_text(text, artifacts, max_len=256):
     # fallback: whitespace -> token ids
     return fallback_encode(text, code_tok, max_len=max_len)
 
-@st.cache_data(show_spinner=False)
+# removed @st.cache_data decorator to avoid UnhashableParamError from Streamlit caching
 def greedy_seq2seq_generate_local(model, enc_ids, artifacts, max_len=256):
     model.eval()
     code_decode = artifacts["code_decode"]
