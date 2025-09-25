@@ -265,63 +265,6 @@ def greedy_seq2seq_generate_local(model, enc_ids, artifacts, max_len=256):
     else:
         return " ".join(map(str, ids))
 
-# Beam search (basic)
-def beam_search_seq2seq_generate(model, enc_ids, artifacts, beam_size=4, max_len=120):
-    model.eval()
-    PAD_DEC = artifacts["doc_tok"].get("<PAD>", 0) if artifacts["doc_tok"] else 0
-    BOS_DEC = artifacts["doc_tok"].get("<BOS>", None) if artifacts["doc_tok"] else None
-    EOS_DEC = artifacts["doc_tok"].get("<EOS>", None) if artifacts["doc_tok"] else None
-    enc_tensor = torch.tensor([enc_ids], dtype=torch.long, device=DEVICE)
-    with torch.no_grad():
-        # first step: run encoder
-        enc_emb = model.enc_emb(enc_tensor)
-        enc_out, (h_n, c_n) = model.encoder(enc_emb)
-        # initialize beam
-        beams = [ ([], 0.0, h_n[-1].clone(), c_n[-1].clone(), model.dec_emb(torch.tensor([BOS_DEC if BOS_DEC is not None else 0], device=DEVICE)).squeeze(0)) ]
-        completed = []
-        for step in range(max_len):
-            new_beams = []
-            for tokens, score, dec_h, dec_c, emb_prev in beams:
-                # compute attention, context, and logits for one step
-                # we need to form emb_t: either emb_prev or embedding of last token
-                emb_t = emb_prev.unsqueeze(0)
-                scores = torch.bmm(enc_out, dec_h.unsqueeze(2)).squeeze(2)
-                attn_weights = torch.softmax(scores, dim=1)
-                context = torch.bmm(attn_weights.unsqueeze(1), enc_out).squeeze(1)
-                cell_in = torch.cat([emb_t.squeeze(0), context], dim=1)
-                dec_h, dec_c = model.decoder_cell(cell_in, (dec_h, dec_c))
-                proj = torch.tanh(model.attn_proj(torch.cat([dec_h, context], dim=1)))
-                logits = model.out(proj)   # (V,)
-                log_probs = torch.log_softmax(logits, dim=0).cpu().numpy()
-                # pick top beam_size tokens
-                top_idx = np.argsort(log_probs)[-beam_size:][::-1]
-                for tid in top_idx:
-                    new_score = score + float(log_probs[int(tid)])
-                    new_tokens = tokens + [int(tid)]
-                    # new emb_prev
-                    new_emb_prev = model.dec_emb(torch.tensor([tid], device=DEVICE)).squeeze(0)
-                    new_beams.append((new_tokens, new_score, dec_h.clone(), dec_c.clone(), new_emb_prev))
-            # keep top beam_size beams
-            new_beams.sort(key=lambda x: x[1], reverse=True)
-            beams = new_beams[:beam_size]
-            # move finished beams to completed if EOS encountered
-            still_running = []
-            for b in beams:
-                if EOS_DEC is not None and (len(b[0])>0 and b[0][-1]==EOS_DEC):
-                    completed.append(b)
-                else:
-                    still_running.append(b)
-            beams = still_running
-            if not beams:
-                break
-        final = completed if completed else beams
-        best = sorted(final, key=lambda x:x[1], reverse=True)[0]
-        ids = best[0]
-    if artifacts["doc_decode"]:
-        return artifacts["doc_decode"](ids)
-    else:
-        return " ".join(map(str, ids))
-
 # -------------- Streamlit UI (aesthetic layout, no functionality change) ---------------------------
 def main():
     st.set_page_config(page_title="DocGen - Integrated System", layout="wide")
@@ -344,8 +287,7 @@ def main():
         st.header("Generation options")
         gen_type = st.selectbox("What to generate", ["Short summary", "Full docstring"])
         max_len = st.slider("Max generated length (tokens)", min_value=30, max_value=400, value=128)
-        method = st.radio("Method", ["Greedy", "Beam search"])
-        beam_size = st.slider("Beam size (if beam search)", min_value=2, max_value=12, value=4)
+        # Beam search removed — always use Greedy
         use_context = st.checkbox("Use context retrieval (Word2Vec)", value=True)
         top_k_context = st.slider("Nearest neighbors", 1, 5, 2)
         st.markdown("---")
@@ -452,13 +394,10 @@ def main():
             context_concat = "\n\n".join([snippet] + context_docstrings) if context_docstrings else snippet
             enc_ids_final = encode_input_text(context_concat, artifacts, max_len=400)
 
-            # Run generation
+            # Run generation (always Greedy now)
             st.info("Running generation on model (this may take a few seconds)...")
             t0 = time.time()
-            if method == "Greedy":
-                out_text = greedy_seq2seq_generate_local(model, enc_ids_final, artifacts, max_len=max_len)
-            else:
-                out_text = beam_search_seq2seq_generate(model, enc_ids_final, artifacts, beam_size=beam_size, max_len=max_len)
+            out_text = greedy_seq2seq_generate_local(model, enc_ids_final, artifacts, max_len=max_len)
             t1 = time.time()
 
             # Update right column with results (compact)
